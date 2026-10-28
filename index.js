@@ -348,7 +348,8 @@ export function apply(ctx, config = {}) {
       '截取屏幕并返回图像。默认截主显示器、缩放到宽 1280、JPEG 质量 68 (省 token), 并在光标处画绿色准星。'
       + ' 可只截某个窗口 (window) 或区域 (region) 以进一步省 token; grayscale=true 看文字表格更省; '
       + 'onlyIfChanged=true 时若画面与上一帧完全相同则不返回图像 (只回 unchanged)。'
-      + ' 返回的 region/scale 决定后续鼠标工具默认的坐标系: 直接使用图像里的像素坐标即可。',
+      + ' 返回的 region/scale 决定后续鼠标工具默认的坐标系: 直接使用图像里的像素坐标即可。'
+      + ' 读屏优先级最低 (L3/L4): 能用 desktop_a11y / desktop_ocr / desktop_find 解决的就别截图。',
     parameters: {
       type: 'object',
       properties: {
@@ -647,7 +648,7 @@ export function apply(ctx, config = {}) {
     description:
       '把屏幕上的文字读成 JSON (文本 + 屏幕坐标), 不返回图片 —— 一次约 100 token, 一张截图约 15000。'
       + ' 想看界面上有哪些按钮/菜单/数值时优先用它; window/region 限定范围, 默认整个前台窗口。'
-      + ' scale 1.5-2 可提高小字识别率。读不到图标/颜色/图形, 那些用 desktop_find 或 desktop_screenshot。',
+      + ' scale 1.5-2 可提高小字识别率。读屏优先级 L1: 没有文字(游戏图标/状态)就改用 desktop_find; 必须看懂视觉再上 desktop_screenshot。',
     parameters: {
       type: 'object',
       properties: {
@@ -845,7 +846,7 @@ export function apply(ctx, config = {}) {
     description:
       '读窗口的"无障碍控件树" (Windows UI Automation): 按钮/输入框/文本/菜单/标签页, 每项带名称与屏幕坐标, 一次约 150 token。'
       + ' 操作普通软件/浏览器/WPF/UWP 时这是最省的看懂方式, 拿到的坐标可直接点。'
-      + ' Unity 等自绘画布 (游戏) 读不到内容 —— 那种用 desktop_find / desktop_ocr。',
+      + ' 读屏优先级 L0: 读不到内容(只回 5 个节点)就改用 desktop_ocr / desktop_find。',
     parameters: {
       type: 'object',
       properties: {
