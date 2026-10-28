@@ -642,6 +642,204 @@ export function apply(ctx, config = {}) {
     },
   })
 
+  ctx.tools.register({
+    name: 'desktop_ocr',
+    description:
+      '把屏幕上的文字读成 JSON (文本 + 屏幕坐标), 不返回图片 —— 一次约 100 token, 一张截图约 15000。'
+      + ' 想看界面上有哪些按钮/菜单/数值时优先用它; window/region 限定范围, 默认整个前台窗口。'
+      + ' scale 1.5-2 可提高小字识别率。读不到图标/颜色/图形, 那些用 desktop_find 或 desktop_screenshot。',
+    parameters: {
+      type: 'object',
+      properties: {
+        window: { type: ['string', 'number'], description: '要读的窗口 (标题子串或 hwnd), 默认前台窗口' },
+        region: {
+          type: 'object',
+          description: '只读该屏幕区域 (物理像素)',
+          properties: {
+            left: { type: 'number' }, top: { type: 'number' },
+            width: { type: 'number' }, height: { type: 'number' },
+          },
+        },
+        scale: { type: 'number', description: '识别前放大倍数 1-3, 小字用 1.5-2; 默认 1' },
+        lang: { type: 'string', description: '语言标签 (zh-Hans / en-US), 默认跟随系统' },
+        minLength: { type: 'number', description: '丢掉短于该长度的行, 默认 1' },
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args, exec) {
+      guard('desktop_ocr')
+      const region = await resolveRegion(args, exec?.signal)
+      const res = await helper.run({
+        cmd: 'ocr',
+        left: region.left,
+        top: region.top,
+        width: region.width,
+        height: region.height,
+        scale: Math.max(1, Math.min(3, Number(args.scale) || 1)),
+        lang: args.lang ? String(args.lang) : '',
+      }, { signal: exec?.signal, timeoutMs: 60000 })
+      const minLen = Math.max(1, intOr(args.minLength, 1))
+      const lines = (res.lines || []).filter((l) => String(l.t || '').trim().length >= minLen)
+      return {
+        ok: true,
+        region: { left: region.left, top: region.top, width: region.width, height: region.height },
+        engine: res.engine,
+        count: lines.length,
+        lines: lines.map((l) => ({ t: l.t, x: l.x, y: l.y, w: l.w, h: l.h })),
+        coord: 'screen',
+      }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'desktop_find',
+    description:
+      '按颜色"看"屏幕, 只返回数字不返回图片 (几十到两百 token)。三种模式: '
+      + 'find=找某种颜色的所有色块, 返回中心点列表 (找高亮格子/按钮/指示灯); '
+      + 'grid=把区域切成 cols×rows 网格, 返回每格平均色 (快速判断布局); '
+      + 'points=读若干坐标的颜色 (校验某点是否为绿色等)。',
+    parameters: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['find', 'grid', 'points'], description: '默认 find' },
+        window: { type: ['string', 'number'], description: '限定窗口 (标题子串或 hwnd)' },
+        region: {
+          type: 'object',
+          description: '限定屏幕区域 (物理像素)',
+          properties: {
+            left: { type: 'number' }, top: { type: 'number' },
+            width: { type: 'number' }, height: { type: 'number' },
+          },
+        },
+        color: { type: 'string', description: 'find 用: #rrggbb' },
+        tolerance: { type: 'number', description: 'find 用: 颜色容差, 默认 30' },
+        minArea: { type: 'number', description: 'find 用: 最小色块面积 (px), 默认 40' },
+        step: { type: 'number', description: 'find 用: 采样步长, 默认 2 (越大越快越粗)' },
+        maxResults: { type: 'number', description: 'find 用: 最多返回几个, 默认 30' },
+        points: {
+          type: 'array',
+          description: 'points 用: [{x,y}, ...] 坐标 (默认按最近截图的图像坐标, space=screen 时为屏幕坐标)',
+          items: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } } },
+        },
+        cols: { type: 'number', description: 'grid 用: 列数, 默认 16' },
+        rows: { type: 'number', description: 'grid 用: 行数, 默认 9' },
+        space: { type: 'string', enum: ['image', 'screen'], description: 'points 坐标基准, 默认 image' },
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args, exec) {
+      guard('desktop_find')
+      const mode = ['find', 'grid', 'points'].includes(args.mode) ? args.mode : 'find'
+      let region
+      if (mode === 'points' && !args.region && (args.window === undefined || args.window === null || args.window === '')) {
+        const lay = await layout(exec?.signal)
+        region = { ...lay.virtualScreen }
+      } else {
+        region = await resolveRegion(args, exec?.signal)
+      }
+      const req = {
+        cmd: 'probe',
+        mode,
+        left: region.left,
+        top: region.top,
+        width: region.width,
+        height: region.height,
+      }
+      if (mode === 'points') {
+        const space = describeSpace(args.space)
+        const list = Array.isArray(args.points) ? args.points : []
+        if (!list.length) throw new Error('points 模式需要 points: [{x,y}, ...]')
+        req.points = list.map((p) => {
+          const s = space === 'image' ? toScreen(p.x, p.y, 'image') : { x: intOr(p.x, 0), y: intOr(p.y, 0) }
+          return `${s.x},${s.y}`
+        }).join(';')
+      } else if (mode === 'grid') {
+        req.cols = intOr(args.cols, 16)
+        req.rows = intOr(args.rows, 9)
+      } else {
+        if (!args.color) throw new Error('find 模式需要 color: "#rrggbb"')
+        req.color = String(args.color)
+        req.tolerance = intOr(args.tolerance, 30)
+        req.minArea = intOr(args.minArea, 40)
+        req.step = intOr(args.step, 2)
+        req.maxResults = intOr(args.maxResults, 30)
+      }
+      const res = await helper.run(req, { signal: exec?.signal, timeoutMs: 30000 })
+      const out = { ok: true, mode, region: { left: region.left, top: region.top, width: region.width, height: region.height } }
+      if (mode === 'points') out.points = res.points || []
+      else if (mode === 'grid') { out.cols = res.cols; out.rows = res.rows; out.grid = res.grid }
+      else { out.total = res.total; out.matches = res.matches || []; out.coord = 'screen' }
+      return out
+    },
+  })
+
+  ctx.tools.register({
+    name: 'desktop_click_text',
+    description:
+      '读屏上的文字并点击它: {text:"开始行动"} 一步完成"找字→算坐标→点击"。'
+      + ' match=contains (默认) 或 exact; index 选第几个命中 (0 起); button 默认 left。'
+      + ' 命中返回 clicked 与坐标, 没命中返回 candidates (可换成更短的关键词重试)。',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要找的文字' },
+        match: { type: 'string', enum: ['contains', 'exact'], description: '默认 contains' },
+        index: { type: 'number', description: '第几个命中, 默认 0' },
+        window: { type: ['string', 'number'], description: '限定窗口, 默认前台窗口' },
+        region: {
+          type: 'object',
+          description: '限定屏幕区域 (物理像素)',
+          properties: {
+            left: { type: 'number' }, top: { type: 'number' },
+            width: { type: 'number' }, height: { type: 'number' },
+          },
+        },
+        scale: { type: 'number', description: 'OCR 放大倍数, 默认 1' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: '默认 left' },
+        dryRun: { type: 'boolean', description: '只找不点' },
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args, exec) {
+      guard('desktop_click_text')
+      const needle = String(args.text || '').trim()
+      if (!needle) throw new Error('需要 text')
+      const region = await resolveRegion(args, exec?.signal)
+      const res = await helper.run({
+        cmd: 'ocr',
+        left: region.left,
+        top: region.top,
+        width: region.width,
+        height: region.height,
+        scale: Math.max(1, Math.min(3, Number(args.scale) || 1)),
+        lang: '',
+      }, { signal: exec?.signal, timeoutMs: 60000 })
+      const exact = args.match === 'exact'
+      const hits = (res.lines || []).filter((l) => {
+        const t = String(l.t || '').trim()
+        return exact ? t === needle : t.includes(needle)
+      })
+      if (!hits.length) {
+        return {
+          ok: false,
+          reason: 'text not found',
+          text: needle,
+          region: { left: region.left, top: region.top, width: region.width, height: region.height },
+          candidates: (res.lines || []).slice(0, 25).map((l) => String(l.t || '').trim()),
+        }
+      }
+      const hit = hits[Math.max(0, Math.min(hits.length - 1, intOr(args.index, 0)))]
+      const x = Math.round(hit.x + hit.w / 2)
+      const y = Math.round(hit.y + hit.h / 2)
+      if (args.dryRun === true) return { ok: true, dryRun: true, hit: { t: hit.t, x, y, w: hit.w, h: hit.h }, hits: hits.length }
+      await helper.run({
+        cmd: 'mouse', action: 'click', button: args.button || 'left',
+        count: 1, amount: 1, direction: 'down', durationMs: 0, x, y,
+      }, { signal: exec?.signal, timeoutMs: 20000 })
+      return { ok: true, clicked: String(hit.t || '').trim(), x, y, hits: hits.length, coord: 'screen' }
+    },
+  })
+
   async function runStep(op, step, signal) {
     const space = describeSpace(step.space)
     if (op === 'wait') {

@@ -1,3 +1,15 @@
+## 0.3.0
+
+### 新增：低成本读屏（不传图也能"看见"）
+- `desktop_ocr` —— 调 Windows 自带 OCR（Windows.Media.Ocr），把区域读成 `{t,x,y,w,h}` 文本行，一次约 100 token（同尺寸截图约 15000）。坐标已换算回屏幕像素，可直接点。
+- `desktop_find` —— 像素探测三模式：`find` 找某颜色的色块中心点（找高亮格子/按钮/指示灯）、`grid` 返回 cols×rows 网格平均色、`points` 读指定坐标颜色。一次 50~200 token。
+- `desktop_click_text` —— "找字→算坐标→点击"一步完成，`match` 可选 contains/exact，`dryRun` 只找不点。
+- helper 新增 `probe` 与 `ocr` 命令；C# 侧新增 `DshProbe`（BitBlt + LockBits 取像素、连通域找色、SavePng 供 OCR 用），OCR 在 PowerShell 侧用 WinRT 调 `OcrEngine`。
+
+### 修正
+- OCR 行坐标原先取 `OcrLine.BoundingRect`（本机恒为 0），改为对 `line.Words[].BoundingRect` 求并集。
+- 中文 OCR 会在字间插空格（"旧 应 用"），输出前按 CJK 相邻规则压缩空格。
+
 # CHANGELOG
 
 ## 0.2.0

@@ -1,7 +1,7 @@
 {
   "name": "dsh-gui-control",
-  "version": "0.2.0",
-  "description": "dsh 插件：让 agent 看见屏幕并像人一样操作鼠标键盘（截图分析 / 类人轨迹点击 / 键盘输入 / 连续看-点-打字-再看），带 Ctrl+Shift+C 紧急停止。",
+  "version": "0.3.0",
+  "description": "类人桌面操作插件：截图 + 鼠标键盘 + 急停 + 低成本读屏（OCR / 找色 / 网格）",
   "type": "module",
   "main": "index.js",
   "files": [
@@ -27,7 +27,10 @@
     "screenshot",
     "mouse",
     "keyboard",
-    "emergency-stop"
+    "emergency-stop",
+    "ocr",
+    "accessibility",
+    "cheap-sensing"
   ],
   "license": "MIT",
   "dsh": {

@@ -4,6 +4,7 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
 
 $src = @'
 using System;
@@ -693,6 +694,225 @@ public static class DshWin
     }
 }
 
+// ------------------------- pixel probe (cheap "seeing") -------------------------
+// Reads pixels and returns numbers instead of an image, so the model can reason
+// about a screen at ~50 tokens instead of ~15000. Modes: points / grid / find.
+public static class DshProbe
+{
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dd, int dx, int dy, int w, int h, IntPtr sd, int sx, int sy, uint rop);
+
+    static Bitmap Grab(int left, int top, int width, int height)
+    {
+        Bitmap bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(bmp))
+        {
+            IntPtr dd = g.GetHdc();
+            IntPtr sd = GetDC(IntPtr.Zero);
+            try
+            {
+                if (!BitBlt(dd, 0, 0, width, height, sd, left, top, 0x00CC0020u | 0x40000000u))
+                    throw new InvalidOperationException("BitBlt failed, err=" + Marshal.GetLastWin32Error());
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, sd);
+                g.ReleaseHdc(dd);
+            }
+        }
+        return bmp;
+    }
+
+    static int[] Pixels(Bitmap bmp)
+    {
+        int w = bmp.Width, h = bmp.Height;
+        BitmapData d = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        int[] px = new int[w * h];
+        try
+        {
+            int[] line = new int[w];
+            for (int y = 0; y < h; y++)
+            {
+                Marshal.Copy((IntPtr)((long)d.Scan0 + (long)y * d.Stride), line, 0, w);
+                Array.Copy(line, 0, px, y * w, w);
+            }
+        }
+        finally { bmp.UnlockBits(d); }
+        return px;
+    }
+
+    public static Hashtable SavePng(int left, int top, int width, int height, string path, double scale)
+    {
+        DshHalt.Guard();
+        if (width <= 0 || height <= 0) throw new InvalidOperationException("save needs width/height");
+        using (Bitmap bmp = Grab(left, top, width, height))
+        {
+            Bitmap scaled = null;
+            int outW = width, outH = height;
+            try
+            {
+                Bitmap src = bmp;
+                if (scale > 1.01)
+                {
+                    outW = (int)Math.Round(width * scale);
+                    outH = (int)Math.Round(height * scale);
+                    scaled = new Bitmap(outW, outH, PixelFormat.Format32bppArgb);
+                    using (Graphics g = Graphics.FromImage(scaled))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(bmp, 0, 0, outW, outH);
+                    }
+                    src = scaled;
+                }
+                src.Save(path, ImageFormat.Png);
+            }
+            finally { if (scaled != null) scaled.Dispose(); }
+            Hashtable r = new Hashtable();
+            r["ok"] = true; r["path"] = path; r["width"] = outW; r["height"] = outH;
+            return r;
+        }
+    }
+
+    public static Hashtable Probe(int left, int top, int width, int height, string mode, string points,
+        int cols, int rows, string hex, int tol, int minArea, int step, int maxResults)
+    {
+        DshHalt.Guard();
+        if (width <= 0 || height <= 0) throw new InvalidOperationException("probe needs width/height");
+        if ((long)width * (long)height > 4000000L) throw new InvalidOperationException("probe region too large (max 4M px)");
+        if (mode == null || mode.Length == 0) mode = "points";
+        using (Bitmap bmp = Grab(left, top, width, height))
+        {
+            Hashtable res = new Hashtable();
+            res["left"] = left; res["top"] = top; res["width"] = width; res["height"] = height; res["mode"] = mode;
+
+            if (mode == "points")
+            {
+                ArrayList pts = new ArrayList();
+                if (points != null && points.Length > 0)
+                {
+                    string[] parts = points.Split(';');
+                    foreach (string part in parts)
+                    {
+                        if (part.Trim().Length == 0) continue;
+                        string[] xy = part.Split(',');
+                        if (xy.Length < 2) continue;
+                        int pxp = int.Parse(xy[0].Trim());
+                        int pyp = int.Parse(xy[1].Trim());
+                        int lx = pxp - left, ly = pyp - top;
+                        string hxs = "-";
+                        if (lx >= 0 && ly >= 0 && lx < width && ly < height)
+                        {
+                            Color c = bmp.GetPixel(lx, ly);
+                            hxs = string.Format("#{0:x2}{1:x2}{2:x2}", c.R, c.G, c.B);
+                        }
+                        Hashtable item = new Hashtable();
+                        item["x"] = pxp; item["y"] = pyp; item["hex"] = hxs;
+                        pts.Add(item);
+                    }
+                }
+                res["points"] = pts;
+                return res;
+            }
+
+            int[] px = Pixels(bmp);
+
+            if (mode == "grid")
+            {
+                if (cols < 1) cols = 16;
+                if (rows < 1) rows = 9;
+                if (cols > 80) cols = 80;
+                if (rows > 60) rows = 60;
+                ArrayList rowsOut = new ArrayList();
+                for (int gy = 0; gy < rows; gy++)
+                {
+                    ArrayList row = new ArrayList();
+                    int y0 = gy * height / rows, y1 = (gy + 1) * height / rows;
+                    for (int gx = 0; gx < cols; gx++)
+                    {
+                        int x0 = gx * width / cols, x1 = (gx + 1) * width / cols;
+                        long rs = 0, gs = 0, bs = 0; int n = 0;
+                        for (int y = y0; y < y1; y += 2)
+                        {
+                            int off = y * width;
+                            for (int x = x0; x < x1; x += 2)
+                            {
+                                int v = px[off + x];
+                                rs += v & 0xFF; gs += (v >> 8) & 0xFF; bs += (v >> 16) & 0xFF; n++;
+                            }
+                        }
+                        if (n == 0) n = 1;
+                        row.Add(string.Format("#{0:x2}{1:x2}{2:x2}", (int)(rs / n), (int)(gs / n), (int)(bs / n)));
+                    }
+                    rowsOut.Add(row);
+                }
+                res["grid"] = rowsOut; res["cols"] = cols; res["rows"] = rows;
+                return res;
+            }
+
+            string hx = (hex == null ? "" : hex.Trim().TrimStart('#'));
+            if (hx.Length != 6) throw new InvalidOperationException("find needs color=#rrggbb");
+            int tr = Convert.ToInt32(hx.Substring(0, 2), 16);
+            int tg = Convert.ToInt32(hx.Substring(2, 2), 16);
+            int tb = Convert.ToInt32(hx.Substring(4, 2), 16);
+            if (tol < 0) tol = 30;
+            if (step < 1) step = 2;
+            if (maxResults < 1) maxResults = 30;
+            long tol2 = (long)tol * tol * 3L;
+
+            byte[] mask = new byte[width * height];
+            for (int y = 0; y < height; y += step)
+            {
+                int off = y * width;
+                for (int x = 0; x < width; x += step)
+                {
+                    int v = px[off + x];
+                    int dr = (v & 0xFF) - tr, dg = ((v >> 8) & 0xFF) - tg, db = ((v >> 16) & 0xFF) - tb;
+                    if ((long)dr * dr + (long)dg * dg + (long)db * db <= tol2) mask[off + x] = 1;
+                }
+            }
+
+            System.Collections.Generic.List<Hashtable> boxes = new System.Collections.Generic.List<Hashtable>();
+            System.Collections.Generic.Stack<int> st = new System.Collections.Generic.Stack<int>();
+            for (int i = 0; i < mask.Length; i++)
+            {
+                if (mask[i] != 1) continue;
+                int minX = int.MaxValue, minY = int.MaxValue, maxX = -1, maxY = -1, cnt = 0;
+                st.Push(i); mask[i] = 2;
+                while (st.Count > 0)
+                {
+                    int idx = st.Pop();
+                    int yy = idx / width, xx = idx - yy * width;
+                    if (xx < minX) minX = xx;
+                    if (xx > maxX) maxX = xx;
+                    if (yy < minY) minY = yy;
+                    if (yy > maxY) maxY = yy;
+                    cnt++;
+                    if (xx >= step && mask[idx - step] == 1) { mask[idx - step] = 2; st.Push(idx - step); }
+                    if (xx + step < width && mask[idx + step] == 1) { mask[idx + step] = 2; st.Push(idx + step); }
+                    if (yy >= step && mask[idx - step * width] == 1) { mask[idx - step * width] = 2; st.Push(idx - step * width); }
+                    if (yy + step < height && mask[idx + step * width] == 1) { mask[idx + step * width] = 2; st.Push(idx + step * width); }
+                }
+                int area = cnt * step * step;
+                if (area < minArea) continue;
+                Hashtable b = new Hashtable();
+                b["x"] = minX + left; b["y"] = minY + top;
+                b["w"] = maxX - minX + step; b["h"] = maxY - minY + step;
+                b["cx"] = minX + left + (maxX - minX) / 2;
+                b["cy"] = minY + top + (maxY - minY) / 2;
+                b["area"] = area;
+                boxes.Add(b);
+            }
+            boxes.Sort(delegate(Hashtable a, Hashtable b) { return ((int)b["area"]).CompareTo((int)a["area"]); });
+            ArrayList outl = new ArrayList();
+            for (int i = 0; i < boxes.Count && i < maxResults; i++) outl.Add(boxes[i]);
+            res["matches"] = outl;
+            res["total"] = boxes.Count;
+            return res;
+        }
+    }
+}
+
 // ------------------------- emergency stop -------------------------
 // A dedicated thread owns Ctrl+Shift+C (halt) and Ctrl+Shift+X (resume) via
 // thread hotkeys, so the stop works even while the main thread is busy typing
@@ -898,6 +1118,79 @@ $haltFile = Join-Path $haltDir ('halt-' + $PID + '.json')
 [DshHalt]::Start($haltFile)
 Start-Sleep -Milliseconds 180
 
+# ---------------- OCR (Windows.Media.Ocr) ----------------
+# Turns a screen region into text + rects, so the model can read a UI for
+# ~100 tokens instead of paying for a picture.
+$script:OcrAsTask = $null
+function Get-AsTaskMethod {
+    if ($null -eq $script:OcrAsTask) {
+        $script:OcrAsTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        })[0]
+    }
+    return $script:OcrAsTask
+}
+function Await-WinRt($op, $type) {
+    $m = Get-AsTaskMethod
+    $task = $m.MakeGenericMethod($type).Invoke($null, @($op))
+    $null = $task.Wait(-1)
+    return $task.Result
+}
+function Invoke-OcrRegion([int]$left, [int]$top, [int]$w, [int]$h, [double]$scale, [string]$lang) {
+    if ($w -le 0 -or $h -le 0) { throw 'ocr needs width/height' }
+    if ($scale -le 0) { $scale = 1.0 }
+    $tmp = Join-Path $env:TEMP ('dsh-ocr-' + [guid]::NewGuid().ToString('N') + '.png')
+    $info = [DshProbe]::SavePng($left, $top, $w, $h, $tmp, $scale)
+    try {
+        [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime] | Out-Null
+        $file = Await-WinRt ([Windows.Storage.StorageFile]::GetFileFromPathAsync($tmp)) ([Windows.Storage.StorageFile])
+        $stream = Await-WinRt ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+        $decoder = Await-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $sb = Await-WinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+        $engine = $null
+        if ($lang -and $lang.Length -gt 0) {
+            try {
+                $lg = New-Object Windows.Globalization.Language($lang)
+                $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($lg)
+            } catch { $engine = $null }
+        }
+        if ($null -eq $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+        if ($null -eq $engine) { throw 'OCR engine unavailable (install a language pack)' }
+        $result = Await-WinRt ($engine.RecognizeAsync($sb)) ([Windows.Media.Ocr.OcrResult])
+        $lines = New-Object System.Collections.ArrayList
+        foreach ($row in $result.Lines) {
+            $minX = [double]::MaxValue; $minY = [double]::MaxValue; $maxX = 0.0; $maxY = 0.0
+            $has = $false
+            foreach ($wd in $row.Words) {
+                $wr = $wd.BoundingRect
+                if (-not $has) {
+                    $minX = $wr.X; $minY = $wr.Y; $maxX = $wr.X + $wr.Width; $maxY = $wr.Y + $wr.Height; $has = $true
+                } else {
+                    if ($wr.X -lt $minX) { $minX = $wr.X }
+                    if ($wr.Y -lt $minY) { $minY = $wr.Y }
+                    if (($wr.X + $wr.Width) -gt $maxX) { $maxX = $wr.X + $wr.Width }
+                    if (($wr.Y + $wr.Height) -gt $maxY) { $maxY = $wr.Y + $wr.Height }
+                }
+            }
+            if (-not $has) { continue }
+            $txt = [string]$row.Text
+            $txt = [regex]::Replace($txt, '(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '')
+            $item = @{}
+            $item['t'] = $txt
+            $item['x'] = [int][math]::Round(($minX / $scale) + $left)
+            $item['y'] = [int][math]::Round(($minY / $scale) + $top)
+            $item['w'] = [int][math]::Round((($maxX - $minX) / $scale))
+            $item['h'] = [int][math]::Round((($maxY - $minY) / $scale))
+            [void]$lines.Add($item)
+        }
+        @{ ok = $true; left = $left; top = $top; width = [int]$info.width; height = [int]$info.height; scale = $scale; engine = [string]$engine.RecognizerLanguage.LanguageTag; count = $lines.Count; lines = $lines }
+    } finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $writer.WriteLine('{"ok":true,"ready":true,"pid":' + $PID + ',"haltFile":' + (ConvertTo-JsonString $haltFile) + ',"hotkeys":{"stop":' + $(if ([DshHalt]::StopRegistered) { 'true' } else { 'false' }) + ',"resume":' + $(if ([DshHalt]::ResumeRegistered) { 'true' } else { 'false' }) + '}}')
 
 while ($true) {
@@ -968,6 +1261,30 @@ while ($true) {
                 }
             }
             'quit' { $writer.WriteLine('{"ok":true,"bye":true}'); break }
+            'probe' {
+                $res = [DshProbe]::Probe(
+                    [int]($(if ($null -ne $req.left) { $req.left } else { 0 })),
+                    [int]($(if ($null -ne $req.top) { $req.top } else { 0 })),
+                    [int]($(if ($null -ne $req.width) { $req.width } else { 0 })),
+                    [int]($(if ($null -ne $req.height) { $req.height } else { 0 })),
+                    [string]$req.mode, [string]$req.points,
+                    [int]($(if ($req.cols) { $req.cols } else { 0 })),
+                    [int]($(if ($req.rows) { $req.rows } else { 0 })),
+                    [string]$req.color,
+                    [int]($(if ($null -ne $req.tolerance) { $req.tolerance } else { 30 })),
+                    [int]($(if ($null -ne $req.minArea) { $req.minArea } else { 40 })),
+                    [int]($(if ($null -ne $req.step) { $req.step } else { 2 })),
+                    [int]($(if ($null -ne $req.maxResults) { $req.maxResults } else { 30 })))
+            }
+            'ocr' {
+                $res = Invoke-OcrRegion `
+                    ([int]($(if ($null -ne $req.left) { $req.left } else { 0 }))) `
+                    ([int]($(if ($null -ne $req.top) { $req.top } else { 0 }))) `
+                    ([int]($(if ($null -ne $req.width) { $req.width } else { 0 }))) `
+                    ([int]($(if ($null -ne $req.height) { $req.height } else { 0 }))) `
+                    ([double]($(if ($null -ne $req.scale) { $req.scale } else { 1.0 }))) `
+                    ([string]$req.lang)
+            }
             default { throw ('unknown cmd: ' + $cmd) }
         }
         if ($res -is [System.Collections.IDictionary]) {
