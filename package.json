@@ -1,0 +1,38 @@
+{
+  "name": "dsh-gui-control",
+  "version": "0.2.0",
+  "description": "dsh 插件：让 agent 看见屏幕并像人一样操作鼠标键盘（截图分析 / 类人轨迹点击 / 键盘输入 / 连续看-点-打字-再看），带 Ctrl+Shift+C 紧急停止。",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib",
+    "helper",
+    "skill.md",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "gui-automation",
+    "screenshot",
+    "mouse",
+    "keyboard",
+    "emergency-stop"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
