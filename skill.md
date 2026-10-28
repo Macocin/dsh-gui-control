@@ -1,18 +1,19 @@
 # 桌面控制 (gui-control)
 
-你有九个工具：
+你有十个工具：
 
-- 看：`desktop_screenshot`（图）、`desktop_ocr`（文字）、`desktop_find`（颜色/网格）、`desktop_info`（窗口与光标）
+- 看：`desktop_screenshot`（图）、`desktop_a11y`（控件树）、`desktop_ocr`（文字）、`desktop_find`（颜色/网格）、`desktop_info`（窗口与光标）
 - 动：`desktop_mouse`、`desktop_keyboard`、`desktop_act`（一串操作合成一次调用）、`desktop_click_text`（按文字点击）
 - 刹车：`desktop_guard`
 
-## 先想"要不要图"：三条低成本通道
+## 先想"要不要图"：四条低成本通道
 
 token 大头永远是截图（一张 1100px 图 ≈ 15000 token）。按下面顺序选：
 
-1. **desktop_ocr** —— 读文字。界面上的按钮名、数值、菜单、报错，优先用它（≈100 token）。`window`/`region` 限定范围越准越省；小字加 `scale:1.5~2`。
-2. **desktop_find** —— 读颜色/布局。`find` 找高亮色块（游戏里"可部署的绿格"、软件里"红色错误条"）；`grid` 8×4 平均色一眼看出界面结构；`points` 校验某个坐标到底是不是那个颜色。50~200 token。
-3. **desktop_screenshot** —— 只有"必须看图"时才用：判断图标含义、验证视觉样式、OCR 失败兜底。粗看用 `maxWidth:320~480` + `grayscale:true`，需要精度再放大或裁 `region`。
+1. **desktop_a11y** —— 读控件树。普通软件/浏览器/WPF/UWP 的按钮、输入框、菜单都带名称和屏幕坐标，直接点即可（≈150 token）；对 Unity 这类自绘画布无效，会只返回窗口本身。
+2. **desktop_ocr** —— 读文字。界面上的按钮名、数值、菜单、报错，优先用它（≈100 token）。`window`/`region` 限定范围越准越省；小字加 `scale:1.5~2`。
+3. **desktop_find** —— 读颜色/布局。`find` 找高亮色块（游戏里"可部署的绿格"、软件里"红色错误条"）；`grid` 8×4 平均色一眼看出界面结构；`points` 校验某个坐标到底是不是那个颜色。50~200 token。
+4. **desktop_screenshot** —— 只有"必须看图"时才用：判断图标含义、验证视觉样式、OCR 失败兜底。粗看用 `maxWidth:320~480` + `grayscale:true`，需要精度再放大或裁 `region`。
 
 **点击文字**别截图量坐标，直接 `desktop_click_text {text:"开始行动"}`。
 

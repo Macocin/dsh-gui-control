@@ -63,7 +63,15 @@ const show = (label, text, budget) => {
   if (value.count > 0 && withCoords === 0) { console.log('FAIL: ocr lines carry no rects'); failed++ }
 }
 
-// 5. click_text with dryRun: must locate text without clicking
+// 5. a11y tree
+{
+  const t0 = Date.now()
+  const { value, text } = await call('desktop_a11y', { maxNodes: 40 })
+  console.log(`a11y ${Date.now() - t0}ms count=${value.count}`)
+  show('a11y', text, 240)
+}
+
+// 6. click_text with dryRun: must locate text without clicking
 {
   const first = (await call('desktop_ocr', {})).value.lines.find((l) => l.t && l.t.trim().length >= 2)
   if (!first) {

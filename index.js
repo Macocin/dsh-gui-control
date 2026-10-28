@@ -840,6 +840,56 @@ export function apply(ctx, config = {}) {
     },
   })
 
+  ctx.tools.register({
+    name: 'desktop_a11y',
+    description:
+      '读窗口的"无障碍控件树" (Windows UI Automation): 按钮/输入框/文本/菜单/标签页, 每项带名称与屏幕坐标, 一次约 150 token。'
+      + ' 操作普通软件/浏览器/WPF/UWP 时这是最省的看懂方式, 拿到的坐标可直接点。'
+      + ' Unity 等自绘画布 (游戏) 读不到内容 —— 那种用 desktop_find / desktop_ocr。',
+    parameters: {
+      type: 'object',
+      properties: {
+        window: { type: ['string', 'number'], description: '窗口标题子串或 hwnd, 默认前台窗口' },
+        maxDepth: { type: 'number', description: '最大层级, 默认 6' },
+        maxNodes: { type: 'number', description: '最多返回多少个控件, 默认 160' },
+        onlyNamed: { type: 'boolean', description: '只返回有名称的控件 (更省 token), 默认 true' },
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args, exec) {
+      guard('desktop_a11y')
+      let hwnd = 0
+      let title = ''
+      if (args.window !== undefined && args.window !== null && args.window !== '') {
+        if (typeof args.window === 'number') hwnd = args.window
+        else {
+          const res = await helper.run({ cmd: 'window', action: 'info', title: String(args.window) }, { signal: exec?.signal, timeoutMs: 15000 })
+          hwnd = Number(res.window?.hwnd) || 0
+          title = res.window?.title || ''
+          if (!hwnd) throw new Error(`找不到窗口: ${args.window}`)
+        }
+      }
+      const res = await helper.run({
+        cmd: 'a11y',
+        hwnd,
+        maxDepth: intOr(args.maxDepth, 6),
+        maxNodes: intOr(args.maxNodes, 160),
+        onlyNamed: args.onlyNamed !== false,
+      }, { signal: exec?.signal, timeoutMs: 30000 })
+      return {
+        ok: true,
+        window: title || res.window || '',
+        count: res.count || 0,
+        truncated: res.truncated === true,
+        nodes: res.nodes || [],
+        coord: 'screen',
+        ...((res.count || 0) === 1
+          ? { hint: '只读到窗口本身: 该界面不暴露控件 (自绘画布), 改用 desktop_find 或 desktop_ocr' }
+          : {}),
+      }
+    },
+  })
+
   async function runStep(op, step, signal) {
     const space = describeSpace(step.space)
     if (op === 'wait') {

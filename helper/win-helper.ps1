@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.Windows.Automation;
 
 public static class DshWin
 {
@@ -694,6 +695,95 @@ public static class DshWin
     }
 }
 
+// ------------------------- accessibility tree (UIA) -------------------------
+// Returns controls (buttons, edits, texts, menus) with screen rects, so the model
+// can drive an app for ~150 tokens instead of looking at a picture. Canvas UIs
+// (Unity games) expose nothing here - use DshProbe for those.
+public static class DshA11y
+{
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+
+    static string TypeName(AutomationElement el)
+    {
+        try
+        {
+            string p = el.Current.ControlType.ProgrammaticName;
+            if (p == null) return "?";
+            if (p.StartsWith("ControlType.")) return p.Substring(12);
+            return p;
+        }
+        catch { return "?"; }
+    }
+
+    public static Hashtable Tree(long hwnd, int maxDepth, int maxNodes, bool onlyNamed)
+    {
+        DshHalt.Guard();
+        if (maxDepth <= 0) maxDepth = 6;
+        if (maxNodes <= 0) maxNodes = 160;
+        AutomationElement root;
+        try
+        {
+            IntPtr h = hwnd != 0 ? new IntPtr(hwnd) : GetForegroundWindow();
+            root = AutomationElement.FromHandle(h);
+        }
+        catch (Exception ex) { throw new InvalidOperationException("UIA unavailable: " + ex.Message); }
+        if (root == null) throw new InvalidOperationException("UIA: window not found");
+
+        string title = "";
+        try { title = root.Current.Name ?? ""; } catch { }
+
+        ArrayList nodes = new ArrayList();
+        System.Collections.Generic.Queue<object[]> q = new System.Collections.Generic.Queue<object[]>();
+        q.Enqueue(new object[] { root, 0 });
+        bool truncated = false;
+        while (q.Count > 0)
+        {
+            object[] item = q.Dequeue();
+            AutomationElement el = (AutomationElement)item[0];
+            int depth = (int)item[1];
+            string name = "";
+            var rect = new System.Windows.Rect(0, 0, 0, 0);
+            bool enabled = true, offscreen = false;
+            try
+            {
+                name = el.Current.Name ?? "";
+                rect = el.Current.BoundingRectangle;
+                enabled = el.Current.IsEnabled;
+                offscreen = el.Current.IsOffscreen;
+            }
+            catch { }
+            bool named = name.Trim().Length > 0;
+            if (!onlyNamed || named || depth == 0)
+            {
+                Hashtable n = new Hashtable();
+                n["d"] = depth;
+                n["t"] = TypeName(el);
+                n["n"] = name.Length > 120 ? name.Substring(0, 120) : name;
+                n["x"] = (int)Math.Round(rect.X);
+                n["y"] = (int)Math.Round(rect.Y);
+                n["w"] = (int)Math.Round(rect.Width);
+                n["h"] = (int)Math.Round(rect.Height);
+                if (!enabled) n["dis"] = true;
+                if (offscreen) n["off"] = true;
+                nodes.Add(n);
+                if (nodes.Count >= maxNodes) { truncated = true; break; }
+            }
+            if (depth >= maxDepth) continue;
+            AutomationElementCollection kids;
+            try { kids = el.FindAll(TreeScope.Children, Condition.TrueCondition); }
+            catch { continue; }
+            for (int i = 0; i < kids.Count; i++) q.Enqueue(new object[] { kids[i], depth + 1 });
+        }
+        Hashtable res = new Hashtable();
+        res["ok"] = true;
+        res["window"] = title;
+        res["count"] = nodes.Count;
+        res["truncated"] = truncated;
+        res["nodes"] = nodes;
+        return res;
+    }
+}
+
 // ------------------------- pixel probe (cheap "seeing") -------------------------
 // Reads pixels and returns numbers instead of an image, so the model can reason
 // about a screen at ~50 tokens instead of ~15000. Modes: points / grid / find.
@@ -1062,7 +1152,7 @@ public static class DshHalt
 }
 '@
 
-Add-Type -TypeDefinition $src -ReferencedAssemblies 'System.Drawing', 'System.Windows.Forms'
+Add-Type -TypeDefinition $src -ReferencedAssemblies 'System.Drawing', 'System.Windows.Forms', 'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase'
 
 $in = [Console]::OpenStandardInput()
 $out = [Console]::OpenStandardOutput()
@@ -1261,6 +1351,13 @@ while ($true) {
                 }
             }
             'quit' { $writer.WriteLine('{"ok":true,"bye":true}'); break }
+            'a11y' {
+                $res = [DshA11y]::Tree(
+                    [long]($(if ($null -ne $req.hwnd) { $req.hwnd } else { 0 })),
+                    [int]($(if ($req.maxDepth) { $req.maxDepth } else { 0 })),
+                    [int]($(if ($req.maxNodes) { $req.maxNodes } else { 0 })),
+                    [bool]$req.onlyNamed)
+            }
             'probe' {
                 $res = [DshProbe]::Probe(
                     [int]($(if ($null -ne $req.left) { $req.left } else { 0 })),

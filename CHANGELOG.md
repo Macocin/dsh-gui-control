@@ -2,6 +2,7 @@
 
 ### 新增：低成本读屏（不传图也能"看见"）
 - `desktop_ocr` —— 调 Windows 自带 OCR（Windows.Media.Ocr），把区域读成 `{t,x,y,w,h}` 文本行，一次约 100 token（同尺寸截图约 15000）。坐标已换算回屏幕像素，可直接点。
+- `desktop_a11y` —— 读窗口的无障碍控件树（Windows UI Automation）：控件类型/名称/屏幕坐标，一次约 150 token。Win32/WPF/UWP/浏览器可用；Unity 自绘画布读不到（那种用 `desktop_find`）；Electron/Chromium 窗口默认只暴露 5 个节点（外壳），要读内容得开系统无障碍或改用 `desktop_ocr`。
 - `desktop_find` —— 像素探测三模式：`find` 找某颜色的色块中心点（找高亮格子/按钮/指示灯）、`grid` 返回 cols×rows 网格平均色、`points` 读指定坐标颜色。一次 50~200 token。
 - `desktop_click_text` —— "找字→算坐标→点击"一步完成，`match` 可选 contains/exact，`dryRun` 只找不点。
 - helper 新增 `probe` 与 `ocr` 命令；C# 侧新增 `DshProbe`（BitBlt + LockBits 取像素、连通域找色、SavePng 供 OCR 用），OCR 在 PowerShell 侧用 WinRT 调 `OcrEngine`。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-gui-control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "类人桌面操作插件：截图 + 鼠标键盘 + 急停 + 低成本读屏（OCR / 找色 / 网格）",
   "type": "module",
   "main": "index.js",
