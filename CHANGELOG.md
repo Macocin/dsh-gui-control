@@ -42,6 +42,16 @@
 
 ### 开发期间修掉的问题
 
+- `desktop_screenshot` / `desktop_ocr` 的区域参数没有上限，`{width:100000, height:100000}`
+  会让 helper 直接向 GDI 申请几十 GB。Node 侧现在夹到单边 ≤ 16384、总面积 ≤ 4 MiB，
+  C# 的 `Grab()` 用同一个上限再挡一次（纵深防御）。
+- Node 侧的上限写成 4 MiB（4,194,304），C# 的 `DshProbe` 却按 4,000,000 判，
+  结果正好卡在两数之间的请求会被 C# 拒绝。两边统一到 `MaxGrabPx = 4194304`。
+- `paste` 的剪贴板还原拿的是 `Clipboard.GetDataObject()` 返回的**活动代理**，
+  一旦 `SetText` 覆盖剪贴板，代理就取不到数据，还原后剪贴板变成空白。
+  改成 `SnapshotClipboard()`：把每种格式的数据物化进独立的 `DataObject` 再还原。
+- `desktop_find` 的 `points` 数量没有上限，改为最多 2000 个。
+- helper 的 `#send` 超时分支只删了 pending、没摘掉 `abort` 监听器，改为统一 `cleanup()`。
 - `desktop_act` 把急停异常当成「单步失败」，吞掉后继续跑后续步骤和尾部截图，
   导致报错标签错成 `screenshot`、批次不中断。现在 `HALTED` 直接冒泡终止整批。
 - `desktop_guard` 未拦截时返回 `note: undefined`，触发 `value is not lossless JSON`。

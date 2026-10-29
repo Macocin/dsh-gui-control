@@ -617,8 +617,14 @@ public static class DshWin
         Hashtable r = new Hashtable();
         r["ok"] = true;
         r["action"] = "paste";
+        // Snapshot the clipboard before touching it. A raw IDataObject from
+        // GetDataObject() is a *live proxy*: the moment SetText replaces the
+        // clipboard, that proxy stops resolving and restoring it writes nothing
+        // (the clipboard ends up empty instead of back to its old contents).
+        // Copy every format into a detached DataObject so the snapshot owns its
+        // own bytes.
         IDataObject prev = null;
-        try { if (restore) prev = Clipboard.GetDataObject(); } catch { }
+        try { if (restore) prev = SnapshotClipboard(); } catch { }
         SetClipboardText(text ?? "");
         Thread.Sleep(R(60, 130));
         KeyDown(0x11); Thread.Sleep(R(20, 45));
@@ -632,6 +638,26 @@ public static class DshWin
         }
         r["chars"] = (text ?? "").Length;
         return r;
+    }
+
+    // Detached copy of whatever is on the clipboard right now. Formats whose
+    // data cannot be materialised (or that throw while being read) are skipped
+    // rather than aborting the whole snapshot.
+    static IDataObject SnapshotClipboard()
+    {
+        IDataObject src = Clipboard.GetDataObject();
+        if (src == null) return null;
+        DataObject snap = new DataObject();
+        foreach (string fmt in src.GetFormats(false))
+        {
+            try
+            {
+                object v = src.GetData(fmt, false);
+                if (v != null) snap.SetData(fmt, false, v);
+            }
+            catch { }
+        }
+        return snap;
     }
 
     static void SetClipboardText(string s)
@@ -793,8 +819,17 @@ public static class DshProbe
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
     [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dd, int dx, int dy, int w, int h, IntPtr sd, int sx, int sy, uint rop);
 
+    // Hard ceiling on any single grab. The bitmap is allocated right here, so
+    // this is the last chance to stop a bad region before Windows is asked for
+    // gigabytes. Node clamps to the same figure; this is defence in depth for
+    // callers that never went through it.
+    public const long MaxGrabPx = 4194304L; // 4 MiB at 4 bytes/pixel (2048x2048)
+
     static Bitmap Grab(int left, int top, int width, int height)
     {
+        if (width <= 0 || height <= 0) throw new InvalidOperationException("grab needs positive width/height");
+        if ((long)width * (long)height > MaxGrabPx)
+            throw new InvalidOperationException("region too large (max 4M px)");
         Bitmap bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using (Graphics g = Graphics.FromImage(bmp))
         {
@@ -869,7 +904,7 @@ public static class DshProbe
     {
         DshHalt.Guard();
         if (width <= 0 || height <= 0) throw new InvalidOperationException("probe needs width/height");
-        if ((long)width * (long)height > 4000000L) throw new InvalidOperationException("probe region too large (max 4M px)");
+        if ((long)width * (long)height > MaxGrabPx) throw new InvalidOperationException("probe region too large (max 4M px)");
         if (mode == null || mode.Length == 0) mode = "points";
         using (Bitmap bmp = Grab(left, top, width, height))
         {

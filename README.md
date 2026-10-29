@@ -250,8 +250,9 @@ node test/halt-midflight.mjs  # 打字中途按急停, 断言 1.5s 内中断
 **不提权。** 全程以当前用户权限运行。目标窗口是管理员权限时 `SendInput` 会被系统拒绝，
 helper 会明确报错而不是静默失败。
 
-**资源上限。** 区域参数在 Node 侧 `clampRegion()` 里夹到单边 ≤ 16384、总面积 ≤ 4M 像素，
-`desktop_find` 的 `points` 最多 2000 个；C# 侧 `DshProbe` 对同样的 4M 上限再挡一次。
+**资源上限。** 区域参数在 Node 侧 `clampRegion()` 里夹到单边 ≤ 16384、总面积 ≤ 4 MiB
+（约 419 万像素，即 2048×2048），`desktop_find` 的 `points` 最多 2000 个；C# 的 `Grab()`
+用同一个 `MaxGrabPx` 上限再挡一次——任何一条路径都不会向 GDI 申请巨图。
 
 **急停优先于一切。** `Guard()` 在截图前、鼠标按下前、每个字符前都会检查，所以长任务
 也能在几毫秒内停下；`Ctrl+Shift+C` 的两次升级和解除都只在 helper 进程内的独立线程里，
