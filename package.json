@@ -1,6 +1,6 @@
 {
   "name": "dsh-gui-control",
-  "version": "0.3.2",
+  "version": "0.1.0",
   "description": "类人桌面操作插件：截图 + 鼠标键盘 + 急停 + 低成本读屏（OCR / 找色 / 网格）",
   "type": "module",
   "main": "index.js",
@@ -32,7 +32,16 @@
     "accessibility",
     "cheap-sensing"
   ],
+  "author": "Macocin",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Macocin/dsh-gui-control.git"
+  },
+  "homepage": "https://github.com/Macocin/dsh-gui-control#readme",
+  "bugs": {
+    "url": "https://github.com/Macocin/dsh-gui-control/issues"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

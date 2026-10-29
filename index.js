@@ -40,11 +40,26 @@ function intOr(value, fallback) {
   return Math.round(n)
 }
 
+// Guard rails for caller-supplied regions. A region is handed to the helper,
+// where it becomes a GDI bitmap allocation; a fat-fingered or hostile
+// { width: 1e6, height: 1e6 } would ask for gigabytes and take the helper (and
+// with it the desktop) down. Clamp before the request crosses the process
+// boundary. DshProbe enforces the same 4M-pixel ceiling on its own side.
+const MAX_REGION_PX = 4 * 1024 * 1024
+const MAX_REGION_EDGE = 16384
+const MAX_FIND_POINTS = 2000
+
 function clampRegion(region) {
   const left = intOr(region.left, 0)
   const top = intOr(region.top, 0)
-  const width = Math.max(16, intOr(region.width, 0))
-  const height = Math.max(16, intOr(region.height, 0))
+  let width = Math.max(16, Math.min(MAX_REGION_EDGE, intOr(region.width, 0)))
+  let height = Math.max(16, Math.min(MAX_REGION_EDGE, intOr(region.height, 0)))
+  if (width * height > MAX_REGION_PX) {
+    // Shrink both edges by the same factor so the aspect ratio survives.
+    const s = Math.sqrt(MAX_REGION_PX / (width * height))
+    width = Math.max(16, Math.floor(width * s))
+    height = Math.max(16, Math.floor(height * s))
+  }
   return { left, top, width, height }
 }
 
@@ -750,6 +765,9 @@ export function apply(ctx, config = {}) {
         const space = describeSpace(args.space)
         const list = Array.isArray(args.points) ? args.points : []
         if (!list.length) throw new Error('points 模式需要 points: [{x,y}, ...]')
+        if (list.length > MAX_FIND_POINTS) {
+          throw new Error(`points 最多 ${MAX_FIND_POINTS} 个 (收到 ${list.length})`)
+        }
         req.points = list.map((p) => {
           const s = space === 'image' ? toScreen(p.x, p.y, 'image') : { x: intOr(p.x, 0), y: intOr(p.y, 0) }
           return `${s.x},${s.y}`
